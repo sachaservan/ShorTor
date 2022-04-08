@@ -3,14 +3,7 @@
 The code for taking end-to-end latency measurements on the live Tor network
 lives in this directory.
 
-For an overview, see the [overall plan][plan] and [technical design][tech-design].
-
-[plan]: https://docs.google.com/document/d/1kjl8MC_EsTJGbHG478iw1boQRXMh5nCwWZHv5BmBLWk/edit
-[tech-design]: https://docs.google.com/document/d/1g_-xQvTqj7p0SV4EWXr8yvzYKqudYCu5Pg8khyKDZyg/edit#heading=h.eqimm36z60ec
-
 ## Components
-
-This is how the [technical design][tech-design] document maps to our implementation:
 
 - The "observer" is a [Celery] worker; run as
 - The "consensus taker" is `latencies/consensus_taker.py`:
