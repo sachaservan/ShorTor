@@ -1,0 +1,38 @@
+{
+	"DOS" : 0,
+	"perc" : 0,
+	"allowNonValidEntry" : false,
+	"allowNonValidMiddle" : true,
+	"allowNonValidExit" : false,
+	"exitNodes" : false,
+	"fastCircuits" : false,
+	"stableCircuits" : false,
+	"useGuards" : false,
+	"longLivedPorts" : [21,22,706,1863,5050,5190,5222,5223,6523,6667,6697,8300],
+	"client1" : {
+		"algorithm" : "PSTor",
+		"algorithmArguments" : "",
+		"address" : "auto",
+		"useGuards" : false,
+		"guards" : [
+			"IPredator@194.132.32.42 2014-02-04 16:50:27",
+			"Cebola@5.135.59.74 2014-02-05 02:34:17"
+		]
+	},
+	"destination1" : {
+		"address" : "129.132.0.0",
+		"ports" : [443]
+	},
+	"client2" : {
+		"algorithm" : "PSTor",
+		"algorithmArguments" : "",
+		"address" : "auto"
+	},
+	"destination2" : {
+		"address" : "129.132.0.0",
+		"ports" : [443]
+	},
+	"multiplicativeFactor" : 1.0,
+	"precompute" : false,
+	"fast" : false
+}
