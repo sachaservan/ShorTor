@@ -6,6 +6,7 @@ This repository contains the relevant source code for the measurements and secur
 | **Code organization** ||
 | :--- | :---|
 | [MaTor-ShorTor/](MaTor-ShorTor/) | Modified [MaTor tool](https://github.com/sachaservan/MATor) for the purpose of analyzing the security of ShorTor.|
+| [Measurements/](Measurements/) | Measurement infrastructure used to collect relay latencies on the Tor network.|
 
 
 ## Acknowledgements 
