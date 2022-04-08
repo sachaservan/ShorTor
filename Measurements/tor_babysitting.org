@@ -1,0 +1,488 @@
+#+title: Tor babysitting
+#+PROPERTY: header-args:sql :engine postgresql :sql :database shortor :dir (shortor/ssh "postgres" "postgres")
+
+* Check on machines
+** Correct IPs for everything
+Get private IPs from terraform (these should be static):
+
+#+header: :var TFDIR=(expand-file-name "~/git/tor-cdn/latencies/devops")
+#+begin_src bash :shebang (zjn/with-pkgs "terraform")
+cd $TFDIR
+terraform show -no-color \
+   | grep -B1 access_ip \
+   | awk 'NR%3{printf "%s ",$3;next;}2' \
+   | awk '{print $1 $2}' \
+   | tr '"' ' '
+#+end_src
+
+#+name: ips
+#+RESULTS:
+| observer | 128.52.143.155 |
+| postgres | 128.52.143.151 |
+| redis    |   128.52.142.7 |
+| taker    | 128.52.143.153 |
+| throttle |  128.52.142.66 |
+
+=lookup= (below) lets us reference =ips= in org-babel =:var= headers.
+
+#+NAME: lookup
+#+begin_src emacs-lisp :var data=ips
+(nth 1 (assoc var data))
+#+end_src
+
+Test it:
+
+#+BEGIN_SRC bash :var foo=lookup(var="redis")
+echo IP for redis: $foo
+#+END_SRC
+
+** Check on disk space
+#+HEADER: :colnames '("Host" "FS" "Size" "Used" "Avail" "Use%" "Mounted on")
+#+HEADER: :var OBSERVER=lookup(var="observer")
+#+HEADER: :var POSTGRES=lookup(var="postgres")
+#+HEADER: :var TAKER=lookup(var="taker")
+#+HEADER: :var JUMPHOST=(identity jump-host)
+#+BEGIN_SRC bash
+for ip in $OBSERVER $TAKER $POSTGRES; do
+  hostname=$(ssh zjn@$ip "hostname")
+  ssh zjn@$ip "df -h" \
+    | grep -Ev '(/dev/loop|tmpfs|/boot/efi|udev)' \
+    | grep -Ev "^Filesystem" \
+    | sed "s/^/$hostname /"
+done
+#+END_SRC
+
+** Check on measurements log
+#+BEGIN_SRC bash :dir (shortor/ssh "observer") :results verbatim
+tail -n 5 /var/log/celery/celery.log
+#+END_SRC
+
+
+#+BEGIN_SRC bash :dir (shortor/ssh "observer" "shortor") :results verbatim
+echo $(whoami)@$(hostname): $(date)
+#+END_SRC
+
+** Rotate measurements log
+If this file is getting to big, a rotation is a good idea.
+#+BEGIN_SRC bash :dir (shortor/ssh "observer") :results verbatim
+du -sh /var/log/celery/celery.log
+#+END_SRC
+
+Rotate the log if it's larger than 100M. Compress old logs and only keep the
+last ten.
+#+BEGIN_SRC bash :dir (shortor/ssh "observer") :results none
+echo '/var/log/celery/celery.log {
+   compress
+   rotate 10
+   size 100M
+}' | sudo tee logrotation.conf > /dev/null
+chmod 644 logrotation.conf
+sudo chown root logrotation.conf
+sudo logrotate logrotation.conf
+#+END_SRC
+
+* DB publishing
+** Upload dump to web
+*** Copy down the latest DB dump (and upload to CSAIL)
+Update the timestamp:
+
+#+BEGIN_SRC bash
+date "+%Y-%m-%dT%H"
+#+END_SRC
+
+#+NAME: timestamp
+
+Only Zack will be able to do this:
+
+#+HEADER: :var JUMPHOST=(identity jump-host)
+#+HEADER: :var POSTGRES=lookup(var="postgres")
+#+BEGIN_SRC bash :var TIMESTAMP=timestamp
+# must `kinit -f zjn@CSAIL.MIT.EDU` first
+if [ ! -d  /tmp/$TIMESTAMP.gz ]; then
+    scp  $POSTGRES:/mnt/db/latest.gz /tmp/$TIMESTAMP.gz
+    scp /tmp/$TIMESTAMP.gz login.csail.mit.edu:public_html/$TIMESTAMP.gz
+fi
+echo https://people.csail.mit.edu/zjn/$TIMESTAMP.gz
+#+END_SRC
+
+*** Load DB dump locally (nixos-container)
+Restart Postgres DB in nixos-container (wipes existing DB):
+
+#+BEGIN_SRC bash :dir /sudo:: :results none
+nixos-container destroy postgres
+# config file path must be absolute
+nixos-container create postgres --config-file=$HOME/git/tor-cdn/latencies/container.nix
+nixos-container start postgres
+#+END_SRC
+
+Repopulate:
+
+#+begin_src bash :var TIMESTAMP=timestamp :shebang (zjn/with-pkgs "postgresql")
+cat /tmp/$TIMESTAMP.gz  | gunzip -c  | psql -U shortor -h $(nixos-container show-ip postgres) shortor > /dev/null
+#+end_src
+
+** Update CSV for Mators
+#+begin_src sql
+CREATE TEMP VIEW relays_v AS
+  -- Grab the top5 vias, sorted by speedup, for each (from, to) pair
+  WITH top5 AS (
+        SELECT DISTINCT
+               t_outer.relay_from_id AS from,
+               t_outer.relay_to_id AS to,
+               t_outer.relay_via_id AS via
+          FROM triplet_latency t_outer
+               JOIN LATERAL (
+                     SELECT *
+                       FROM triplet_latency t_inner
+                      WHERE t_inner.relay_from_id = t_outer.relay_from_id
+                            AND t_inner.relay_to_id = t_outer.relay_to_id
+                   ORDER BY t_inner.speedup DESC
+                      LIMIT 5
+               ) t_top
+               ON true
+      ORDER BY t_outer.relay_from_id, t_outer.relay_to_id
+  ),
+  -- Aggregate the vias into one row per (from, to) pair
+  -- Need to convert relay IDs to fingerprints at this stage (it's much harder
+  -- after the array_agg). Everything else we'll convert over last minute.
+  --
+  -- This table is missing rows for any pairs without known speedups.
+  aggregated AS (
+        SELECT top5.from AS from,
+               top5.to AS to,
+               array_agg(relays.fingerprint) AS vias
+          FROM top5
+          JOIN relays ON relays.id = via
+      GROUP BY top5.from, top5.to
+  ),
+  -- Put in rows for pairs without known speedups.
+  aggregated_with_empties AS (
+      SELECT p.relay1_id AS from,
+             p.relay2_id AS to,
+             aggregated.vias AS vias
+      FROM aggregated
+           RIGHT JOIN pairwise_latency p
+           ON aggregated.from = p.relay1_id
+              AND aggregated.to = p.relay2_id
+  )
+  -- Pretty it up.
+  --
+  -- 1. pull out vias into individual columns
+  -- 2. convert relay IDs for from/to into fingerprints
+    SELECT rfrom.fingerprint AS from,
+           rto.fingerprint AS to,
+           aggregated_with_empties.vias[1] AS via1,
+           aggregated_with_empties.vias[2] AS via2,
+           aggregated_with_empties.vias[3] AS via3,
+           aggregated_with_empties.vias[4] AS via4,
+           aggregated_with_empties.vias[5] AS via5
+      FROM aggregated_with_empties
+           JOIN relays rfrom
+           ON rfrom.id = aggregated_with_empties.from
+           JOIN relays rto
+           ON rto.id = aggregated_with_empties.to
+  ORDER BY rfrom.fingerprint, rto.fingerprint;
+\copy (SELECT * from relays_v LIMIT 5) TO /tmp/data.csv WITH CSV;
+#+end_src
+* DB misc
+** Check DB access
+If this doesn't work, nothing will:
+
+#+BEGIN_SRC sql
+SELECT now();
+#+END_SRC
+
+** Recent batches
+#+BEGIN_SRC sql
+  SELECT status,
+         COUNT(*)
+    FROM batches
+   WHERE end_time > now() - interval '24 hours'
+GROUP BY status;
+#+END_SRC
+
+** Histogram of speedups
+#+begin_src sql
+WITH bucket AS (
+    SELECT FLOOR(speedup/10)*10 AS floor,
+           COUNT(*) AS num
+      FROM triplet_latency
+  GROUP BY 1
+  ORDER BY 1
+)
+SELECT bucket.floor,
+       bucket.num,
+       stars.repeated
+  FROM bucket
+       JOIN LATERAL (
+         SELECT REPEAT('*', (LOG(num) / LOG(2))::int + 1) AS repeated
+       ) stars
+       ON true;
+#+end_src
+
+** How many of our top X relays do we have?
+#+BEGIN_SRC sql
+WITH relay_count AS (
+    SELECT 1000 AS num
+), cutoff AS (
+      SELECT consensus_weight
+        FROM relays
+    ORDER BY consensus_weight DESC
+       LIMIT 1
+      OFFSET (SELECT num FROM relay_count)
+), interesting_relays AS (
+      SELECT id
+        FROM relays
+       WHERE consensus_weight >= (SELECT consensus_weight FROM cutoff)
+    ORDER BY id
+), expected_pairs AS (
+  SELECT r1.id AS r1,
+         r2.id AS r2
+    FROM interesting_relays r1
+         JOIN interesting_relays r2
+         ON r2.id > r1.id
+), matching_pairs AS (
+    SELECT *
+      FROM pairwise_latency p1
+           JOIN expected_pairs p2
+           ON p1.relay1_id = p2.r1
+              AND p1.relay2_id = p2.r2
+)
+SELECT (SELECT COUNT(*) FROM interesting_relays) AS total_relays,
+       (SELECT COUNT(*) FROM matching_pairs) AS pairs_measured,
+       (SELECT COUNT(*) FROM expected_pairs) AS pairs_expected,
+       (SELECT COUNT(*) FROM matching_pairs)::float / (SELECT COUNT(*) FROM expected_pairs) AS frac;
+#+END_SRC
+
+** Make sure we're computing triplet_latency table correctly
+See if =triplet_latency.orig_latency_rtt= doesn't match up with =pairwise_latency.latency_rtt=. If so, there's a bug.
+
+#+BEGIN_SRC sql
+SELECT COUNT(*)
+  FROM triplet_latency t
+       JOIN pairwise_latency p
+       ON t.relay_from_id = p.relay1_id
+          AND t.relay_to_id = p.relay2_id
+ WHERE t.orig_latency_rtt != p.latency_rtt;
+#+END_SRC
+
+If there is, we should fix it.
+
+#+BEGIN_SRC sql
+BEGIN TRANSACTION;
+
+-- Fix orig_latency_rtt where mismatched
+UPDATE triplet_latency t
+   SET orig_latency_rtt = p.latency_rtt
+  FROM pairwise_latency p
+ WHERE t.relay_from_id = p.relay1_id
+       AND t.relay_to_id = p.relay2_id
+       AND t.orig_latency_rtt != p.latency_rtt;
+
+-- Remove rows with non-positive speedup
+DELETE FROM triplet_latency t
+      WHERE speedup <= 0;
+
+-- Remove duplicate rows
+DELETE FROM triplet_latency t1
+      USING triplet_latency t2
+      WHERE t1.relay_from_id = t2.relay_from_id
+            AND t1.relay_to_id = t2.relay_to_id
+            AND t1.relay_via_id = t2.relay_via_id
+            AND t1.via_latency_rtt > t2.via_latency_rtt;
+
+COMMIT TRANSACTION;
+#+END_SRC
+
+Also make sure no duplicate rows in the pairs table (this indicates a bug but probably want to fix manually):
+
+#+BEGIN_SRC sql
+  SELECT relay1_id,
+         relay2_id,
+         COUNT(*)
+    FROM pairwise_latency
+GROUP BY relay1_id,
+         relay2_id
+  HAVING COUNT(*) > 1;
+#+END_SRC
+
+
+* Troubleshooting/Recipes
+** Lots of "relay not founds" in recent batches
+Probably the Tor consensus is stale:
+
+#+begin_src bash :dir (shortor/ssh "observer" t)
+systemctl stop shortor-observer
+systemctl stop tor@default
+systemctl stop tor@exit
+systemctl stop tor@bridge
+
+rm /var/lib/tor/cached-*
+rm /var/lib/tor-instances/bridge/data/cached-*
+rm /var/lib/tor-instances/exit/data/cached-*
+
+reboot
+#+end_src
+** After observer restart
+Make sure
+
+1. exit/bridge running
+
+   #+begin_src bash :dir (shortor/ssh "observer")
+   systemctl status tor@exit
+   systemctl status tor@bridge
+   #+end_src
+2. tor@default running
+
+   #+begin_src bash :dir (shortor/ssh "observer")
+   systemctl status tor@default
+   #+end_src
+3. shortor-observer running
+
+   #+begin_src bash :dir (shortor/ssh "observer")
+   systemctl status shortor-observer
+   #+end_src
+** Run spot check
+
+
+#+header: :var postgres=lookup(var="postgres")
+#+header: :var  redis=lookup(var="redis")
+#+begin_src bash :dir (shortor/ssh "taker" "shortor")
+export SHORTOR_DB_URL="postgresql://shortor@${postgres}/shortor?sslmode=verify-ca&sslkey=/opt/shortor/shortor.key&sslrootcert=/opt/shortor/shortor.ca&sslcert=/opt/shortor/shortor.crt"
+export CELERY_BROKER_URL=redis://:bA2yixy7jNh4Xb65f2o1ngLC@${redis}:6379/0
+export PYTHONPATH=/opt/shortor:/opt/shortor/ting
+/opt/shortor/venv/bin/python -m latencies.spot_check 3000 5000  # relay IDs; fingerprints also okay
+#+end_src
+** Incremental pair/triplet computation exists
+The process should be running:
+#+BEGIN_SRC bash :dir (shortor/ssh "postgres")
+ps aux | grep [c]ompute_triplets
+#+END_SRC
+
+If you need to start it, go on the machine and run this (don't run in org-babel):
+
+#+BEGIN_SRC bash :dir (shortor/ssh "postgres" "postgres") :noeval
+export SHORTOR_DB_URL="postgresql://postgres@/shortor?host=/var/run/postgresql/"
+export PYTHONPATH="/opt/shortor/:/opt/shortor/ting:$PYTHONPATH"
+/opt/shortor/venv/bin/python -m latencies.compute_triplets
+#+END_SRC
+
+There's a =breakpoint()= in there; just type =c= and it'll go.
+
+It's running inside =tmux=:
+
+#+begin_src bash :dir (shortor/ssh "postgres") :noeval
+tmux attach
+#+end_src
+** Packer rebuild
+Packer builds our machine images; terraform looks for new ones.
+#+begin_src bash :noeval
+REPO=$HOME/git/tor-cdn
+cd $REPO/latencies
+source DONOTCOMMIT.SECRETS
+packer build -only='*.observer' devops/main.pkr.hcl
+#+end_src
+** Deploy (Terraform)
+#+begin_src bash :noeval
+REPO=$HOME/git/tor-cdn
+cd $REPO/latencies/devops
+source ../DONOTCOMMIT.SECRETS
+terraform plan  # check out what it wants to do
+terraform apply  # do it
+#+end_src
+* File configuration
+There's a couple things we need to do to make this file work; we do this via a giant file-local variable hack.
+
+Might need to start with:
+
+#+begin_src emacs-lisp :results none
+(setq enable-local-variables t)
+#+end_src
+** nix-shell shebangs
+One is to make sure we can run bash scripts with a [[http://chriswarbo.net/projects/nixos/nix_shell_shebangs.html][nix-shell shebang]] convieniently by defining =zjn/with-pkgs=:
+
+#+begin_src bash :shebang (zjn/with-pkgs "hello") :results verbatim
+hello
+#+end_src
+
+** SSH access via Tramp
+The other is to configure tramp for access to the ShorTor machines.
+
+First make sure we can get to the jump host.
+#+BEGIN_SRC bash :dir (s-concat "/ssh:ubuntu@" jump-host ":")
+echo $(whoami)@$(hostname): $(date)
+#+END_SRC
+
+Can we get to any of the ShorTor machines?
+
+#+BEGIN_SRC bash :dir (shortor/ssh "redis")
+echo $(whoami)@$(hostname): $(date)
+#+END_SRC
+
+How about with sudo?
+
+#+BEGIN_SRC bash :dir (shortor/ssh "taker" "shortor")
+echo $(whoami)@$(hostname): $(date)
+#+END_SRC
+** Prep for Git commit
+Get rid of evaluated blocks:
+#+begin_src emacs-lisp :results none
+(org-babel-map-src-blocks nil (org-babel-remove-result))
+#+end_src
+** File-local variables
+# Local Variables:
+# jump-host: "128.31.26.187"
+# eval: (require 's)
+# eval: (require 'dash)
+# eval: (defun zjn/with-pkgs (&rest pkgs)
+#   "Allows using the nix-shell shebang trick in org-babel."
+#   (s-concat
+#     "#!/usr/bin/env nix-shell\n"
+#      "#!nix-shell -p " (s-join " " pkgs) " -i bash"))
+# eval: (defun zjn/regexp-not-matching (needle)
+#   "Returns a regexp matching all nonempty strings except needle."
+#   ;; Big hack because Emacs regex doesn't support negative lookaheads/behinds.
+#   ;; Probably breaks if needle has special characters of any kind."
+#   (concat "\\("
+#          "\\`.\\{0," (number-to-string (- (length needle) 1)) "\\}\\'"
+#          "\\|"
+#          "\\`.\\{" (number-to-string (+ (length needle) 1)) ",\\}\\'"
+#          "\\|"
+#          "\\`"
+#          ;; TODO: this is wrong: we want "([^f]..|.[^o].|..[^o])" but I'm lazy right now
+#          (apply #'s-concat (mapcar (lambda (x) (concat "[^" (char-to-string x) "]")) needle))
+#          "\\'"
+#          "\\)"))
+# eval: nil ;; Doesn't seem to use ProxyJump for default-proxies so the following doesn't
+# eval: nil ;; work. Instead use the big tramp-connection-properties hack.
+# eval: (require 'tramp)
+# eval: (if nil (add-to-list 'tramp-default-proxies-alist
+#                   (list "^10\\.0\\.0\\.[[:digit:]]\\{1,3\\}$"
+#                          "zjn"
+#                          (s-concat "/ssh:ubuntu@" jump-host ":"))))
+# eval: (setf (alist-get "/ssh:\\(zjn@\\)?10\\.0\\.0\\.[[:digit:]]\\{1,3\\}:"
+#                  tramp-connection-properties
+#                  nil nil #'string=)
+#         (cons "login-args"
+#               (list (cons `("-J" ,(s-concat "ubuntu@" jump-host))
+#                           (car (alist-get 'tramp-login-args
+#                                           (alist-get "ssh" tramp-methods nil nil #'string=)))))))
+# eval: nil ;; Allow /sudo:user@10.0.0.X: via tramp (or 128.52.142.X).
+# eval: nil ;; NOTE: if users don't have home directory, will silently fail. Add an explicit
+# eval: nil ;; directory to tramp string.
+# eval: (add-to-list 'tramp-default-proxies-alist
+#              (list "^10\\.0\\.0\\.[[:digit:]]\\{1,3\\}$"
+#                     (zjn/regexp-not-matching "zjn")
+#                     "/ssh:zjn@%h:"))
+# eval: (add-to-list 'tramp-default-proxies-alist
+#              (list "^128\\.52\\.14[23]\\.[[:digit:]]\\{1,3\\}$"
+#                     (zjn/regexp-not-matching "zjn")
+#                     "/ssh:zjn@%h:"))
+# eval: (setq tramp-histfile-override "/dev/null")
+# eval: nil ;; Convenience for SSHing via tramp; requires "ips" block up-to-date
+# eval: (defun shortor/ssh (hostname &optional user)
+#         (let ((ip (org-babel-ref-resolve (s-concat "lookup(var=\"" hostname "\")"))))
+#           (cond ((stringp user) (s-concat "/sudo:" user "@" ip ":/"))
+#                 (user (s-concat "/sudo:" ip ":/"))
+#                 (t (s-concat "/ssh:zjn@" ip ":/")))))
+# End:

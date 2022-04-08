@@ -1,0 +1,28 @@
+%{ if !real_tor }
+# TODO: needs to be different for real/fake Tor
+TestingTorNetwork 1
+PathsNeededToBuildCircuits 0.67
+TestingDirAuthVoteExit *
+TestingDirAuthVoteHSDir *
+V3AuthNIntervalsValid 2
+TestingDirAuthVoteGuard *
+TestingMinExitFlagThreshold 0
+
+SafeLogging 0
+
+%{ for auth in authorities }
+DirAuthority ${auth.nickname} orport=${auth.orport} no-v2 v3ident=${auth.v3ident} ${auth.ip}:${auth.dirport} ${auth.fingerprint}
+%{ endfor}
+%{ endif }
+
+# Commmon to real/fake tor
+ShutdownWaitLength 2
+ProtocolWarnings 1
+Bridge 127.0.0.1:5100
+Sandbox 1
+ServerDNSDetectHijacking 0
+ServerDNSTestAddresses
+ServerDNSResolvConfFile /run/systemd/resolve/stub-resolv.conf
+
+# Real tor only
+SafeLogging relay

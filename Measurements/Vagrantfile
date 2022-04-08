@@ -1,0 +1,123 @@
+  # -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+def copy_certs (config, host, dst, owner, stem)
+  config.vm.provision "file", source: "devops/certs/tls/#{host}.crt", destination: "/tmp/#{stem}.crt"
+  config.vm.provision "file", source: "devops/certs/tls/#{host}.key", destination: "/tmp/#{stem}.key"
+  config.vm.provision "file", source: "devops/certs/tls/ca.crt", destination: "/tmp/#{stem}.ca"
+  config.vm.provision "shell", inline: <<~SHELL
+    chown #{owner} /tmp/#{stem}.{crt,key,ca}
+    mv -f /tmp/#{stem}.{crt,key,ca} #{dst}
+  SHELL
+end
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/ubuntu2004"
+  config.vm.box_version = "3.1.22"
+  config.vm.synced_folder ".", "/opt/shortor-code", create: true
+
+  config.vm.provider "libvirt" do |v|
+    v.memory = "4096"
+  end
+  # 
+  # Geo data for consensus taker
+  config.vm.provision "file", source: "GeoLite2-City.mmdb", destination: "/tmp/GeoLite2-City.mmdb"
+  config.vm.provision "file", source: "GeoLite2-ASN.mmdb", destination: "/tmp/GeoLite2-ASN.mmdb"
+
+  # Build phase
+  config.vm.provision "shell", inline: <<~'SHELL'
+  # only apt-get update every hour at most
+  UPDATED_FILE=/var/cache/apt/updated
+  if [ -z "$(find $UPDATED_FILE -mmin -60)" ]; then
+      apt-get update
+      touch "$UPDATED_FILE"
+  fi
+  SHELL
+  # install_shortor doesn't work for continuous sync
+  config.vm.provision "shell", inline: <<-'SHELL'
+    apt-get install -y \
+      python3-venv python-is-python3 python3-dev \
+      build-essential libpq-dev
+    PROJECT_DIR="/opt/shortor"
+    mkdir -p "$PROJECT_DIR"
+    VENV_DIR="$PROJECT_DIR/venv"
+    python -m venv "$VENV_DIR"
+    "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir wheel
+    "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir -r /opt/shortor-code/requirements.txt
+  SHELL
+  config.vm.provision "shell", path: "devops/install_redis.sh"
+  config.vm.provision "shell", path: "devops/install_postgres.sh"
+  config.vm.provision "shell", path: "devops/install_throttle.sh"
+  config.vm.provision "shell", path: "devops/install_chutney.sh"
+  config.vm.provision "shell", path: "devops/install_observer.sh"
+  config.vm.provision "shell", path: "devops/install_consensus_taker.sh"
+
+
+  # Hacks to deal with Vagrant code syncing:
+  #     vagrant rsync && vagrant ssh --command 'sudo /opt/shortor/install.sh'
+  config.vm.provision "shell", inline: <<~'SHELL'
+    mkdir -p /opt/shortor
+    cat > /opt/shortor/install.sh << EOF
+    #!/bin/bash
+    if [ ! -d /opt/shortor-code ]; then
+      echo "not exists"
+      exit 1
+    fi
+    cp -r /opt/shortor-code/* /opt/shortor/
+    id -u shortor && chown -R shortor /opt/shortor
+    EOF
+    chmod +x /opt/shortor/install.sh
+    /opt/shortor/install.sh
+  SHELL
+  # 
+  # Hacks to allow running code easily as Shortor user with proper environment
+  config.vm.provision "file", source: "devops/run_shortor_python.sh", destination: "/home/vagrant/"
+
+  # # Deploy phase
+  copy_certs(config, "postgres", "/etc/postgresql/12/main/", "postgres:postgres", "server")
+  # don't need separate observer/taker keys; we can share them
+  copy_certs(config, "observer", "/opt/shortor/", "shortor:users", "shortor")
+  config.vm.provision "shell", inline: "echo 'requirepass PASSWORD' | sudo tee /etc/redis/runtime.conf"
+  config.vm.provision "shell", inline: "echo -e '[semaphores]\nTOR_CIRCUITS=3\n' > /etc/throttle.toml"
+  config.vm.provision "shell", inline: <<-SHELL
+    mkdir -p /opt/shortor-db.bak
+    chown postgres:postgres /opt/shortor-db.bak
+  SHELL
+  config.vm.provision "shell", inline: <<-SHELL
+    mkdir -p /opt/shortor-consensus-cache
+    chown shortor:users /opt/shortor-consensus-cache
+  SHELL
+  config.vm.provision "file", source: "shortor.conf-vagrant", destination: "/tmp/shortor.conf"
+  config.vm.provision "shell", inline: <<~SHELL
+    mv -f /tmp/shortor.conf /opt/shortor/
+    chown shortor:users /opt/shortor/shortor.conf
+  SHELL
+
+  # don't run consensus taker/observer by default
+  config.vm.provision "shell", inline: "systemctl disable shortor-observer.service shortor-consensus-taker.timer"
+
+  config.vm.provision "file", source: "devops/torrc-runtime", destination: "/tmp/torrc-runtime"
+  config.vm.provision "file", source: "devops/certs/chutney.tar.gz", destination: "/tmp/tor-certs.tar.gz"
+  config.vm.provision "shell", inline: <<~'SHELL'
+      mkdir -p /opt/shortor-tor
+      # base64 is to match prod
+      cat /tmp/tor-certs.tar.gz | base64 > /opt/shortor-tor/tor.tar.gz.base64
+      chmod -R +r /opt/shortor-tor
+      chown -R chutney:users /opt/shortor-tor
+      mv -f /tmp/torrc-runtime /etc/tor/torrc.runtime
+      MY_PUBLIC_IP=$(hostname -I | cut -d' ' -f 1)
+      echo "Bridge $MY_PUBLIC_IP:5100" >> /etc/tor/torrc.runtime
+      echo "ExitPolicy accept $MY_PUBLIC_IP:16000-17000, reject *:*" > /etc/tor/exitpolicy.torrc
+      echo "/opt/chutney/dirauth.torrc" > /etc/apparmor.d/local/system_tor
+  SHELL
+
+  # Only useful on second provisions (e.g. `vagrant provision`)
+  config.vm.provision "shell", inline: <<~'SHELL'
+    systemctl stop shortor-observer
+    sudo -u postgres dropdb shortor || true
+    rm -f /opt/shortor-db.bak/*
+    rm -f /opt/shortor-consensus-cache/*
+    echo "Done! :)"
+  SHELL
+
+end

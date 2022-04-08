@@ -1,0 +1,3 @@
+tor1.foo.org
+tor1.example.com
+tor2.foo.org

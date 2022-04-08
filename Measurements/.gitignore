@@ -1,0 +1,5 @@
+.venv
+.hypothesis
+terraform.tfstate*
+.terraform*
+*.mmdb

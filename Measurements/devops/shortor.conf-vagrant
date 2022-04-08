@@ -1,0 +1,17 @@
+CELERY_BROKER_URL=redis://:PASSWORD@redis.local:6379/0
+SHORTOR_DB_URL="postgresql://shortor@postgres.local/shortor?sslmode=verify-ca&sslkey=/opt/shortor/shortor.key&sslrootcert=/opt/shortor/shortor.ca&sslcert=/opt/shortor/shortor.crt"
+SHORTOR_THROTTLE_URL="http://throttle.local:8888"
+SHORTOR_CONSENSUS_RELAY="chutney.local:7000"
+PG_BACKUP_DIR=/opt/shortor-db.bak
+# Every time the consensus taker runs, fill the queue up to at most this length
+SHORTOR_MAX_QUEUE_LENGTH=5
+# The consensus taker uses a "successive subsets" strategy to ensure we have a
+# mostly-complete database at any given time. That is: add relays a few at a
+# time, then measure all pairs.
+#
+# We define "a few at a time" based on the batch size (note that this is number
+# of *pairs*, not number of relays).
+SHORTOR_BATCH_SIZE=7
+# Take this many measurements per circuit.
+SHORTOR_NUM_MEASUREMENTS=5
+SHORTOR_CONSENSUS_CACHE_DIR=/opt/shortor-consensus-cache

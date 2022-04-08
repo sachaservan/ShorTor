@@ -1,0 +1,18 @@
+[MASTER]
+[MESSAGES CONTROL]
+disable=C0330,  # conflicts with Black
+        C0326,  # conflicts with Black
+        W1203,  # I like f-string logging, it's slower but easier
+        fixme
+[BASIC]
+good-names=i,
+           j,
+           k,
+           x,
+           y,
+           db,
+           ip
+no-docstring-rgx=^(main$|_)
+docstring-min-length=2
+[FORMAT]
+max-line-length=88

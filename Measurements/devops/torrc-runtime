@@ -1,0 +1,22 @@
+TestingTorNetwork 1
+PathsNeededToBuildCircuits 0.67
+TestingDirAuthVoteExit *
+TestingDirAuthVoteHSDir *
+V3AuthNIntervalsValid 2
+TestingDirAuthVoteGuard *
+TestingMinExitFlagThreshold 0
+ConnLimit 60
+ShutdownWaitLength 2
+ProtocolWarnings 1
+SafeLogging 0
+Sandbox 1
+ServerDNSDetectHijacking 0
+ServerDNSTestAddresses
+Address 127.0.0.1
+ServerDNSResolvConfFile /run/systemd/resolve/stub-resolv.conf
+ExitPolicy accept 127.0.0.0/8:*
+ExitPolicyRejectPrivate 0
+ExitPolicy accept private:*
+
+# DirAuthority NICK orport=PORT no-v2 v3ident=ABCDE 127.0.0.1:DIRPORT EFGHI
+%include /opt/chutney/dirauth.torrc

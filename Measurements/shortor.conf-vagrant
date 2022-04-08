@@ -1,0 +1,22 @@
+CELERY_BROKER_URL=redis://:PASSWORD@127.0.0.1:6379/0
+SHORTOR_DB_URL="postgresql://shortor@127.0.0.1/shortor?sslmode=verify-ca&sslkey=/opt/shortor/shortor.key&sslrootcert=/opt/shortor/shortor.ca&sslcert=/opt/shortor/shortor.crt"
+SHORTOR_THROTTLE_URL="http://127.0.0.1:8888"
+# Point this at a Chutney dir authority
+SHORTOR_CONSENSUS_RELAY="127.0.0.1:7000"
+PG_BACKUP_DIR=/opt/shortor-db.bak
+# Every time the consensus taker runs, fill the queue up to at most this length.
+# This should be 125% or so of the number of measurements we can take in the
+# interval at which the consensus taker runs.
+SHORTOR_MAX_QUEUE_LENGTH=5
+# The consensus taker uses a "successive subsets" strategy to ensure we have a
+# mostly-complete database at any given time. That is: add relays a few at a
+# time, then measure all pairs.
+#
+# We define "a few at a time" based on the batch size (note that this is number
+# of *pairs*, not number of relays).
+SHORTOR_BATCH_SIZE=7
+# Take this many measurements per circuit.
+SHORTOR_NUM_MEASUREMENTS=5
+SHORTOR_CONSENSUS_CACHE_DIR=/opt/shortor-consensus-cache
+SHORTOR_GEOIP_CITY=/opt/geo/GeoLite2-City.mmdb
+SHORTOR_GEOIP_ASN=/opt/geo/GeoLite2-ASN.mmdb

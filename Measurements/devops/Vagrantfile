@@ -1,0 +1,96 @@
+  # -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+def install_shortor (config)
+  config.vm.provision "file", source: "../requirements.txt", destination: "/tmp/requirements.txt"
+  config.vm.provision "file", source: "../latencies/", destination: "/tmp/latencies"
+  config.vm.provision "shell", path: "install_shortor.sh"
+end
+
+def copy_certs (config, host, dst, owner, stem)
+  config.vm.provision "file", source: "certs/#{host}.crt", destination: "/tmp/#{stem}.crt"
+  config.vm.provision "file", source: "certs/#{host}.key", destination: "/tmp/#{stem}.key"
+  config.vm.provision "file", source: "certs/ca.crt", destination: "/tmp/#{stem}.ca"
+  config.vm.provision "shell",
+                  inline: "chown #{owner} /tmp/#{stem}.{crt,key,ca} && mv /tmp/#{stem}.{crt,key,ca} #{dst}"
+end
+
+def setup_local_networking (config)
+  config.vm.provision "shell", inline: ""
+end
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/ubuntu2004"
+  config.vm.box_version = "3.1.22"
+
+  config.vm.provider "libvirt" do |v|
+    v.memory = "2048"
+  end
+
+  # Build
+  config.vm.provision "shell", inline: "apt-get update"
+  # Deploy
+  # so VMs can find each other as $HOSTNAME.local
+  config.vm.provision "shell", inline: "sudo apt-get install -y avahi-daemon libnss-mdns"
+
+  config.vm.define "postgres"  do |pg|
+    pg.vm.hostname = "postgres"
+    # Build
+    install_shortor(pg)
+    pg.vm.provision "shell", path: "install_postgres.sh"
+    # Deploy
+    copy_certs(pg, "postgres", "/etc/postgresql/12/main/", "postgres:postgres", "server")
+    pg.vm.provision "shell", inline: <<-SHELL
+      mkdir -p /opt/shortor/db.bak
+      chown postgres:postgres /opt/shortor/db.bak
+      echo 'PG_BACKUP_DIR=/opt/shortor/db.bak' > /opt/shortor/shortor.conf
+    SHELL
+  end
+
+  config.vm.define "redis"  do |redis|
+    redis.vm.hostname = "redis"
+    # Build
+    redis.vm.provision "shell", path: "install_redis.sh"
+    # Deploy
+    redis.vm.provision "shell", inline: "echo 'requirepass PASSWORD' | sudo tee /etc/redis/runtime.conf"
+  end
+
+  config.vm.define "throttle"  do |throttle|
+    throttle.vm.hostname = "throttle"
+    # Build
+    throttle.vm.provision "shell", path: "install_throttle.sh"
+    # Deploy
+    throttle.vm.provision "shell", inline: "echo -e '[semaphores]\nTOR_CIRCUITS=3\n' > /etc/throttle.toml"
+  end
+
+  config.vm.define "observer"  do |observer|
+    observer.vm.hostname = "observer"
+    # Build
+    install_shortor(observer)
+    observer.vm.provision "shell", path: "install_observer.sh"
+    # Deploy
+    copy_certs(observer, "observer", "/opt/shortor/", "shortor:users", "shortor")
+    observer.vm.provision "file", source: "shortor.conf-vagrant", destination: "/tmp/shortor.conf"
+    observer.vm.provision "shell", inline: "sudo -u shortor cp /tmp/shortor.conf /opt/shortor/"
+  end
+
+  config.vm.define "consensus-taker"  do |taker|
+    taker.vm.hostname = "taker"
+    # Build
+    install_shortor(taker)
+    taker.vm.provision "shell", path: "install_consensus_taker.sh"
+    copy_certs(taker, "taker", "/opt/shortor/", "shortor:users", "shortor")
+    # Deploy
+    taker.vm.provision "file", source: "shortor.conf-vagrant", destination: "/tmp/shortor.conf"
+    taker.vm.provision "file", source: "../tests/data/consensus.txt", destination: "/tmp/consensus.txt"
+    taker.vm.provision "shell", inline: "sudo -u shortor cp /tmp/shortor.conf /tmp/consensus.txt /opt/shortor/"
+  end
+
+  config.vm.define "chutney" do |chutney|
+    chutney.vm.hostname = "chutney"
+    # Build
+    chutney.vm.provision "shell", path: "install_chutney.sh"
+    # Deploy
+    # N/A
+  end
+end
