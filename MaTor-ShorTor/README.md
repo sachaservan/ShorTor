@@ -1,5 +1,8 @@
-# MaTor(s) Tool
-This is the latest version of the MaTor tool used for generating the plots of the [Your Choice MaTor(s) paper](https://petsymposium.org/2016/files/papers/Your_Choice_MATor(s).pdf). 
+# MaTor tool modified for ShorTor analysis
+
+See also:
+- original MaTor source code: https://github.com/sebastianmeiser/MATor
+- updated MaTor source code with bug fixes: https://github.com/sachaservan/MATor
 
 ## Installation
 
@@ -23,7 +26,7 @@ Steps 1 & 2 will populate the ```/data``` directory with the necessary Tor conse
 
 ### Compiling MaTor 
 
-To compile and build the MaTor executable (tested on macOS): 
+To compile and build the MaTor executable (tested on macOS and Ubuntu LTS 20.04): 
 
 1. Install dependencies: 
 	- boost
@@ -46,12 +49,4 @@ At this point the ```runtest``` executable should be located in ```[your_path]/M
 ### Running the plot analysis code
 1. ```cd [your_path]/MATor/scipts```
 2. ```python worklist-example.py``` or ```python worklist-example-complex.py```
-
-### Publications
-Links to the academic publications relevant for MATor:
-- The framework: [AnoA framework (Journal Version)](https://pdfs.semanticscholar.org/2327/8ffba48f5b4e3aed479497cb6dcfbad80cc3.pdf)
-- Introduction of MATor [Nothing else MATor(s) (CCS'14)](https://dl.acm.org/citation.cfm?id=2660371)
-- Extension of MATor (as in this repo) [Your Choice MATor(s) (PETS'16)](https://www.degruyter.com/downloadpdf/j/popets.2015.2016.issue-2/popets-2016-0004/popets-2016-0004.xml)
-- Comprehensive, self-contained, and improved writeup of AnoA and MATor [Quantitative Anonymity Guarantees for Tor (PhD Thesis)](https://publikationen.sulb.uni-saarland.de/handle/20.500.11880/26754)
-
 
