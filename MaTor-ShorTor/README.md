@@ -10,19 +10,29 @@ See also:
 
 #### Download the GeoLite2 City database from MaxMind
 1. Create an account with [MaxMind](https://www.maxmind.com) and download the GeoLite2 City database.
-2. Place the ```GeoLite2-City.mmdb``` file in the ```/mator-db/``` directory. 
+2. Place the `GeoLite2-City.mmdb` file in the `/mator-db/` directory. 
 
-#### Download the Tor data 
-1. Run ```cd mator-db``` and run ```bash install-db.sh``` (this may take a while). 
-2. Run ```bash download-year.sh``` and enter the year (e.g., 2014) you would like to download consensus data for. 
-Note: step 2 will take a while. 
+#### Download and Build the Database Tools
+1. Navigate to the `mator-db` directory: `cd mator-db`
+2. Run `bash installdb.sh` to:
+   - Set up the Go environment and directory structure
+   - Build the `mator-db` tool from source
+   - This step requires Go to be installed on your system
 
-Navigate to ```scripts/``` and run:
-1. ```python download_consensus.py -sm STAR_MONTH -sy START_YEAR -em END_MONTH -ey END_YEAR``` (e.g., ```python download_consensus.py -sm 01 -sy 2014 -em 12 -ey 2014```). 
-2. ```python construct_database.py -sm STAR_MONTH -sy START_YEAR -em END_MONTH -ey END_YEAR``` (e.g., ```python construct_database.py -sm 04 -em 04 -sy 2014 -ey 2014```).
+#### Download the Tor Consensus Data 
+1. While still in the `mator-db` directory, run `bash download-year.sh`
+2. When prompted, enter the year (e.g., 2014) for which you want to download consensus data
+   - This will automatically download data for all 12 months of the specified year
+   - The process may take a while depending on your connection speed
 
-Steps 1 & 2 will populate the ```/data``` directory with the necessary Tor consensus data. 
-*NOTE:* You must have all the necessary data ready *before* you compile MaTor since the compilation process (cmake) will move the data directory to ```/build/Release/```. 
+#### Process the Consensus Data
+Navigate to `scripts/` and run:
+1. `python download_consensus.py -sm START_MONTH -sy START_YEAR -em END_MONTH -ey END_YEAR`
+   Example: `python download_consensus.py -sm 01 -sy 2014 -em 12 -ey 2014`
+2. `python construct_database.py -sm START_MONTH -sy START_YEAR -em END_MONTH -ey END_YEAR`
+   Example: `python construct_database.py -sm 04 -sy 2014 -em 04 -ey 2014`
+
+**Important Note:** Ensure all data is downloaded and processed *before* compiling MaTor, as the compilation process (cmake) will move the data directory to `/build/Release/`.
 
 ### Compiling MaTor 
 
