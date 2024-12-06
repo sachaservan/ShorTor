@@ -1,0 +1,6 @@
+[submodule "Measurements/latencies/ting"]
+	path = Measurements/latencies/ting
+	url = git@github.com:iowaguy/ting.git
+[submodule "Measurements/latencies/tmodel-ccs2018.github.io"]
+	path = Measurements/latencies/tmodel-ccs2018.github.io
+	url = https://github.com/tmodel-ccs2018/tmodel-ccs2018.github.io.git
